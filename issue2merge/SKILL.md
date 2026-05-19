@@ -1,0 +1,266 @@
+---
+name: issue2merge
+description: >
+  Multi-agent fix loop that drives a GitHub issue from triage to merge-ready PR.
+  Manager agent coordinates parallel Fix sub-agents, a Review sub-agent, and a
+  Watch sub-agent to resolve GitHub issues with automatic branching, Copilot
+  kickoff, CI monitoring, and review thread resolution.
+  Use when: (1) user says "fix issue #{N}" or "manager loop", (2) responding to
+  PR review comments needing code changes, (3) fixing CI failures across
+  multiple files, (4) user explicitly asks to use the fix-loop pattern.
+---
+
+# Issue2Merge — Manager Fix Loop
+
+## Your Role: Manager Agent (orchestrate only, do not write code)
+
+You are the commander of this fix loop. Your job:
+1. Read the target Issue / PR Review
+2. Categorize problems into groups (max {MAX_FIX_AGENTS})
+3. Auto-create Branch + Draft PR
+4. **Fix Sub-agents** (max {MAX_FIX_AGENTS}, one per group, parallel) — code repairs
+5. **Review Sub-agent** (1) — audits all changes
+6. On pass → Commit + Push
+7. Notify Copilot for re-review (if enabled)
+8. **Watch Sub-agent** (1) — monitors CI + review comments
+9. Loop if needed (max 5 cycles)
+10. Report when merge-ready
+
+---
+
+## Parameters (prompted or read from context)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PERSON` | Who to report to | Tim |
+| `REPO_PATH` | Local project path | `Git-Repository/161-happy-land` |
+| `REPO_FULL` | GitHub `owner/repo` | TimK42/161-happy-land |
+| `ISSUE_NUMBER` | Source issue # | *(required)* |
+| `ALL_ISSUES` | Comma-separated list of all issues in this PR | `{ISSUE_NUMBER}` |
+| `COPILOT_ENABLED` | Enable Copilot review kickoff? | true |
+| `AUTO_MERGE` | Auto-merge PR when CI passes? | false |
+
+## Derived automatically on init
+
+| Variable | Derived From |
+|----------|-------------|
+| `BRANCH_NAME` = `fix-{ISSUE_NUMBER}-manager-loop` |
+| `WORK_PATH` = `{REPO_PATH}` |
+| `GH_TOKEN` = from `~/.openclaw/openclaw.json` env.vars.GH_TOKEN |
+
+---
+
+## Flow (high level)
+
+```
+0. Init: read issue → analyze → create branch + Draft PR
+1. Group problems into at most {MAX_FIX_AGENTS} groups (keep each group homogeneous)
+2. Spawn Fix sub-agents in parallel → each takes one group
+3. ⏳ Wait for ALL fix sub-agents → record retrospectives
+4. 🚨 Spawn Review sub-agent → audit all changes (runs full test suite)
+5. Review pass? → no → go back to step 2 with feedback
+6. ⛔ HARD GATE: Review must have passed. No push without review PASS.
+   Git add + commit + push
+7. [If COPILOT_ENABLED] gh pr edit --add-reviewer @copilot
+8. Spawn Watch sub-agent → monitor CI + review threads
+   ┌─ CI fail or new fix comments? → back to step 2
+   └─ All clear → report {PERSON}: Ready to merge 🎉
+```
+
+---
+
+## Step Details
+
+### Step 0: Init
+
+**0a. Read issue:**
+```bash
+GH_TOKEN=$(cat ~/.openclaw/openclaw.json | python3 -c "import sys, json; d=json.load(sys.stdin); print(d.get('env',{}).get('vars',{}).get('GH_TOKEN',''))")
+curl -s -H "Authorization: token $GH_TOKEN" \
+  "https://api.github.com/repos/{REPO_FULL}/issues/{ISSUE_NUMBER}" | jq '.body'
+```
+
+Analyze: problem count, files mentioned, severity, source (Copilot review / manual / other).
+
+**0b. Classify:** Group by file, type, or severity. See `references/grouping.md`.
+
+**0c. ⛔ Check main branch CI health:** Before anything else, check if main CI is already red.
+
+```bash
+cd {REPO_PATH}
+gh run list --branch main --limit 3 --json conclusion,status,displayTitle --jq '.[] | select(.status == "completed") | {conclusion, displayTitle}'
+```
+
+If the most recent completed run on main has `conclusion: "failure"`, notify {PERSON}:
+> ⚠️ `{REPO_FULL}` main branch CI is currently **red** (last run: _{displayTitle}_). Future PRs will fail on merge. Fix main CI first before proceeding, or confirm you want to continue anyway?
+
+If user says fix main first → exit. If user says continue → proceed.
+
+**0d. Ask about auto-merge:** Ask {PERSON}:
+> Auto-merge PR when CI passes? (y/N)
+
+Set `AUTO_MERGE=true` if yes, `false` otherwise. Used in Step 9.
+
+**0e. Ask max fix sub-agents:** Ask {PERSON}:
+> How many parallel fix sub-agents? (1-4, default 3)
+
+Set `MAX_FIX_AGENTS` (1-4). Controls problem grouping and parallel agents.
+
+**0f. Create branch + Draft PR:** Run `scripts/init_branch.sh {REPO_PATH} {ALL_ISSUES} {BRANCH_NAME} {REPO_FULL}`
+
+Capture PR_NUMBER from output. All subsequent steps use this PR number.
+
+### Step 1: Group Problems
+
+Output format:
+```
+=== GROUPING ===
+Group A: ({files}) — {N} issues — #{issue_number}
+Group B: ...
+... (up to {MAX_FIX_AGENTS} groups)
+=== END GROUPING ===
+```
+
+### Step 2: Spawn Fix Sub-agents
+
+For each group, spawn a sub-agent. Template in `references/fix-agent-prompt.md`.
+
+```javascript
+sessions_spawn({
+  task: `[use reference/fix-agent-prompt.md content with variables filled]`,
+  cwd: "{REPO_PATH}",
+  runtime: "subagent",
+  mode: "run"
+})
+```
+
+⚠️ Fix agents: timeout = 0 (never timeout).
+
+### Step 3: Wait & Record
+
+- Poll `subagents list` for completion
+- Save each sub-agent's retrospective → ~/.openclaw/workspace/memory/
+- All done → Step 4
+
+### Step 4: Spawn Review Sub-agent
+
+Template in `references/review-agent-prompt.md`.
+
+### Step 5: Review Decision — ⛔ HARD GATE (MANDATORY)
+
+**Before any push, a Review sub-agent MUST be dispatched and MUST pass.**
+
+- **PASS** → Step 6
+- **FAIL** → save feedback to ~/.openclaw/workspace/memory/ → back to Step 2 with feedback enriched
+
+⛔ No exceptions. No shortcuts. Review must pass before any push.
+
+### Step 6: Rebase + Commit + Push (⛔ GATE: Review must have passed)
+
+```bash
+cd {REPO_PATH}
+git checkout {BRANCH_NAME}
+git pull origin {BRANCH_NAME} --rebase
+git add -A
+git commit -m "fix({ALL_ISSUES}): address issues from #{ALL_ISSUES}"
+git push origin {BRANCH_NAME}
+```
+
+Verify with `git diff HEAD --stat` before commit.
+
+### Step 7: Copilot Re-review
+
+If COPILOT_ENABLED = true:
+```bash
+gh pr edit {PR_NUMBER} --add-reviewer @copilot
+```
+
+### Step 8: Watch
+
+Template in `references/watch-agent-prompt.md`.
+
+### Step 9: Act on Watch Result
+
+| Result | Action |
+|--------|--------|
+| `ready_to_merge` | If `AUTO_MERGE=true` (from Step 0d answer):
+  ```bash
+  cd {REPO_PATH}
+  git checkout main && git pull origin main
+  gh pr merge {PR_NUMBER} --squash --delete-branch
+  git pull origin main
+  ```
+  Close all associated issues:
+  ```bash
+  IFS=',' read -ra ISSUES <<< "{ALL_ISSUES}"
+  for iss in "${ISSUES[@]}"; do
+    gh issue close "$iss" --comment "Closed by PR #${PR_NUMBER}"
+  done
+  ```
+  Report: "PR #{PR_NUMBER} auto-merged + {count_of_all_issues} issues closed 🚀"
+  Otherwise (AUTO_MERGE=false):
+  ```bash
+  gh pr ready {PR_NUMBER}
+  ```
+  Report {PERSON}: "PR #{PR_NUMBER} is ready to merge! Run `gh pr merge {PR_NUMBER} --squash --delete-branch` when ready."
+  Then close all associated issues:
+  ```bash
+  IFS=',' read -ra ISSUES <<< "{ALL_ISSUES}"
+  for iss in "${ISSUES[@]}"; do
+    gh issue close "$iss" --comment "Closed by PR #${PR_NUMBER}"
+  done
+  ``` |
+| `ci_failed` | Log errors → back to Step 2 |
+| `needs_fix` | Reply + resolve threads → back to Step 2 |
+| `copilot_error` | Copilot review failed (error/rate limit). **Do NOT block pipeline.** CI status takes priority. If CI is passing → treat as `ready_to_merge`. If CI is failing → treat as `ci_failed`. Notify {PERSON} optionally: "Copilot review unavailable on PR #{PR_NUMBER} (rate limit/error). Django CI is still valid."
+| `waiting` | Watch timed out (30 min). Escalate to {PERSON}: "Watch timed out on PR #{PR_NUMBER} after 30 min — please check manually." |
+
+### Step 10: Loop Protection
+
+- Max 5 cycles total
+- Same problem unresolved after 3 cycles → escalate to {PERSON}
+- Watch timeout (>30 min) → escalate
+- Same CI failure 3× → escalate
+
+---
+
+## Reference Files
+
+### Sub-agent Prompt Templates (loaded at respective steps)
+
+| File | Sub-agent | When to Load |
+|------|-----------|-------------|
+| `references/fix-agent-prompt.md` | **Fix Sub-agent** — parallel code repair | Step 2 — spawn one per group (up to {MAX_FIX_AGENTS}) |
+| `references/review-agent-prompt.md` | **Review Sub-agent** — audits all changes | Step 4 — spawned once |
+| `references/watch-agent-prompt.md` | **Watch Sub-agent** — CI + comments monitor | Step 8 — spawned once |
+
+### Manager Reference Guide
+
+| File | Purpose | When to Load |
+|------|---------|-------------|
+| `references/grouping.md` | Problem classification strategy for Manager | Step 1 — Manager reads to decide grouping |
+
+Load each reference only when you reach the corresponding step. Do not pre-load all of them.
+
+---
+
+## Memory — Save Retrospectives
+
+Every sub-agent MUST save its retrospective to `~/.openclaw/workspace/memory/` after completing:
+
+| Sub-agent | File pattern | Example |
+|-----------|-------------|---------|
+| Fix Group A | `~/.openclaw/workspace/memory/{YYYY-MM-DD}-{HH-MM}-{ISSUE_NUMBER}-fix-group-A.md` | `2026-05-14-22-49-384-fix-group-A.md` |
+| Fix Group B | `~/.openclaw/workspace/memory/{YYYY-MM-DD}-{HH-MM}-{ISSUE_NUMBER}-fix-group-B.md` | `2026-05-14-22-49-384-fix-group-B.md` |
+| Fix Group C | `~/.openclaw/workspace/memory/{YYYY-MM-DD}-{HH-MM}-{ISSUE_NUMBER}-fix-group-C.md` | `2026-05-14-22-49-384-fix-group-C.md` |
+| Fix Group D | `~/.openclaw/workspace/memory/{YYYY-MM-DD}-{HH-MM}-{ISSUE_NUMBER}-fix-group-D.md` | `2026-05-14-22-49-384-fix-group-D.md` |
+| Review | `~/.openclaw/workspace/memory/{YYYY-MM-DD}-{HH-MM}-{ISSUE_NUMBER}-review-round-{N}.md` | `2026-05-14-22-49-384-review-round-1.md` |
+| Watch | `~/.openclaw/workspace/memory/{YYYY-MM-DD}-{HH-MM}-{ISSUE_NUMBER}-watch-round-{N}.md` | `2026-05-14-22-49-384-watch-round-1.md` |
+
+The Manager tracks round numbers for Review and Watch (increment each loop cycle).
+
+## Communication Rules
+
+- Report progress after each major step
+- Escalate blockers immediately
+- Final message: "{PERSON}, PR #{PR_NUMBER} is ready to merge! [summary of changes]"
