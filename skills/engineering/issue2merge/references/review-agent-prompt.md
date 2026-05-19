@@ -37,7 +37,7 @@ This will load the complete review checklists including:
 You will use these checklists item-by-item during the review phase.
 
 ## Task
-Review all uncommitted changes in {REPO_PATH} using the **code-review** skill checklists.
+Review all uncommitted changes on the working branch `{BRANCH_NAME}` (diff against `main`) using the **code-review** skill checklists.
 
 ## ⛔ MANDATORY: Run Full Test Suite First
 
