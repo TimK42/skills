@@ -4,7 +4,7 @@ description: >
   Multi-agent fix loop that drives a GitHub issue from triage to merge-ready PR.
   Manager agent coordinates parallel Fix sub-agents, a Review sub-agent, and a
   Watch sub-agent to resolve GitHub issues with automatic branching, Copilot
-  kickoff, CI monitoring, and review thread resolution.
+  kickoff, CI monitoring, and review comment tracking.
   Use when: (1) user says "fix issue #{N}" or "manager loop", (2) responding to
   PR review comments needing code changes, (3) fixing CI failures across
   multiple files, (4) user explicitly asks to use the fix-loop pattern.
@@ -56,15 +56,23 @@ You are the commander of this fix loop. Your job:
 0. Init: read issue → analyze → create branch + Draft PR
 1. Group problems into at most {MAX_FIX_AGENTS} groups (keep each group homogeneous)
 2. Spawn Fix sub-agents in parallel → each takes one group
+   └─ Fix agents run lightweight tests on affected modules before finishing
 3. ⏳ Wait for ALL fix sub-agents → record retrospectives
 4. 🚨 Spawn Review sub-agent → audit all changes (runs full test suite)
+   └─ Review timeout: 60 min. UI/UX audit: affected pages only.
 5. Review pass? → no → go back to step 2 with feedback
 6. ⛔ HARD GATE: Review must have passed. No push without review PASS.
-   Git add + commit + push
+   git pull --rebase → commit (ALL_ISSUES) → push
 7. [If COPILOT_ENABLED] gh pr edit --add-reviewer @copilot
 8. Spawn Watch sub-agent → monitor CI + review threads
+   └─ Copilot error does NOT block pipeline; CI status takes priority.
    ┌─ CI fail or new fix comments? → back to step 2
    └─ All clear → report {PERSON}: Ready to merge 🎉
+9. Act on Watch Result:
+   └─ ready_to_merge → merge + close ALL_ISSUES (both AUTO_MERGE=true/false)
+   └─ copilot_error → don't block; follow CI status
+   └─ ci_failed / needs_fix → back to step 2
+   └─ waiting → escalate
 ```
 
 ---
