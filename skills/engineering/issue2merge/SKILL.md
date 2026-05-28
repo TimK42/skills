@@ -119,16 +119,19 @@ Set `MAX_FIX_AGENTS` (1-4). Controls problem grouping and parallel agents.
 
 Capture PR_NUMBER from output. All subsequent steps use this PR number.
 
-**0g. Init planning files:** Run `init-session.sh` from planning-with-files to create a `.planning/` directory with persistent working memory for this fix loop. This helps the Manager and sub-agents survive context resets.
+**0g. Init planning files (optional — skip if planning-with-files not installed):** Run `init-session.sh` from planning-with-files to create a `.planning/` directory with persistent working memory for this fix loop. This helps the Manager and sub-agents survive context resets.
 
 ```bash
 cd {REPO_PATH}
-# Derive a short slug from the issue title(s). Use ISSUE_NUMBER as fallback.
-PLAN_TITLE="issue-${ISSUE_NUMBER}"
-bash ${PLANNING_ROOT}/init-session.sh --plan-dir "fix-issue-${ISSUE_NUMBER}"
+if [ -d "${PLANNING_ROOT}" ]; then
+  bash ${PLANNING_ROOT}/init-session.sh --plan-dir "fix-issue-${ISSUE_NUMBER}"
+  echo "[planning-with-files] initialized"
+else
+  echo "[planning-with-files] not installed — skipping Step 0g"
+fi
 ```
 
-After init, populate `task_plan.md` with actual phases from the issue analysis:
+If planning-with-files is installed, after init populate `task_plan.md` with actual phases from the issue analysis:
 - Phase 1: Read & Analyze (0a-0b already done, mark `complete`)
 - Phase 2-N: One phase per fix group from Step 1 (mark first as `in_progress`)
 - Phase N+1: Review & CI pass
