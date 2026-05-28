@@ -47,13 +47,14 @@ You are the commander of this fix loop. Your job:
 | `BRANCH_NAME` = `fix-{ISSUE_NUMBER}-manager-loop` |
 | `WORK_PATH` = `{REPO_PATH}` |
 | `GH_TOKEN` = from `~/.openclaw/openclaw.json` env.vars.GH_TOKEN |
+| `PLANNING_ROOT` = `~/.openclaw/workspace/skills/planning-with-files/scripts` | path to planning-with-files init scripts |
 
 ---
 
 ## Flow (high level)
 
 ```
-0. Init: read issue → analyze → create branch + Draft PR
+0. Init: read issue → analyze → create branch + Draft PR → init planning files
 1. Group problems into at most {MAX_FIX_AGENTS} groups (keep each group homogeneous)
 2. Spawn Fix sub-agents in parallel → each takes one group
    └─ Fix agents run lightweight tests on affected modules before finishing
@@ -117,6 +118,25 @@ Set `MAX_FIX_AGENTS` (1-4). Controls problem grouping and parallel agents.
 **0f. Create branch + Draft PR:** Run `scripts/init_branch.sh {REPO_PATH} {ALL_ISSUES} {BRANCH_NAME} {REPO_FULL}`
 
 Capture PR_NUMBER from output. All subsequent steps use this PR number.
+
+**0g. Init planning files:** Run `init-session.sh` from planning-with-files to create a `.planning/` directory with persistent working memory for this fix loop. This helps the Manager and sub-agents survive context resets.
+
+```bash
+cd {REPO_PATH}
+# Derive a short slug from the issue title(s). Use ISSUE_NUMBER as fallback.
+PLAN_TITLE="issue-${ISSUE_NUMBER}"
+bash ${PLANNING_ROOT}/init-session.sh --plan-dir "fix-issue-${ISSUE_NUMBER}"
+```
+
+After init, populate `task_plan.md` with actual phases from the issue analysis:
+- Phase 1: Read & Analyze (0a-0b already done, mark `complete`)
+- Phase 2-N: One phase per fix group from Step 1 (mark first as `in_progress`)
+- Phase N+1: Review & CI pass
+- Phase N+2: Merge & Close
+
+Also populate `findings.md` with the issue analysis results (problem description, files mentioned, severity).
+
+Planning files persist across context resets, /compact, and sub-agent sessions. Hooks auto-inject plan context on every message.
 
 ### Step 1: Group Problems
 
