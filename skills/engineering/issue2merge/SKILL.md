@@ -2,9 +2,9 @@
 name: issue2merge
 description: >
   Multi-agent fix loop that drives a GitHub issue from triage to merge-ready PR.
-  Manager agent coordinates parallel Fix sub-agents, a Review sub-agent, and a
-  Watch sub-agent to resolve GitHub issues with automatic branching, Copilot
-  kickoff, CI monitoring, and review comment tracking.
+  Manager agent coordinates parallel Fix sub-agents, a Review sub-agent (dual-axis
+  Standards + Spec via the review skill), and a Watch sub-agent. Iterates:
+  fix → review → fix issues → review again → until both axes pass.
   Use when: (1) user says "fix issue #{N}" or "manager loop", (2) responding to
   PR review comments needing code changes, (3) fixing CI failures across
   multiple files, (4) user explicitly asks to use the fix-loop pattern.
@@ -47,7 +47,7 @@ You are the commander of this fix loop. Your job:
 | `BRANCH_NAME` = `fix-{ISSUE_NUMBER}-manager-loop` |
 | `WORK_PATH` = `{REPO_PATH}` |
 | `GH_TOKEN` = from `~/.openclaw/openclaw.json` env.vars.GH_TOKEN |
-| `PLANNING_ROOT` = `~/.openclaw/workspace/skills/planning-with-files/scripts` | path to planning-with-files init scripts |
+| `PLANNING_ROOT` = `/Users/tim_openclaw/.openclaw/workspace/skills/planning-with-files/scripts` | path to planning-with-files init scripts (resolved absolute path) |
 
 ---
 
@@ -59,17 +59,23 @@ You are the commander of this fix loop. Your job:
 2. Spawn Fix sub-agents in parallel → each takes one group
    └─ Fix agents run lightweight tests on affected modules before finishing
 3. ⏳ Wait for ALL fix sub-agents → record retrospectives
-4. 🚨 Spawn Review sub-agent → audit all changes (runs full test suite)
-   └─ Review timeout: 60 min. UI/UX audit: affected pages only.
-5. Review pass? → no → go back to step 2 with feedback
-6. ⛔ HARD GATE: Review must have passed. No push without review PASS.
+4. 🚨 Spawn Review sub-agent → **dual-axis audit (Standards + Spec)** via the `review` skill
+   └─ Standards: does code follow repo's documented coding standards?
+   └─ Spec: does code match what the originating issue asked for?
+   └─ Runs full test suite + reviews all changes
+5. Review PASS on BOTH axes? → proceed to step 6
+6. Review FAIL on EITHER axis? → save feedback → **back to Step 2** with findings
+   └─ Loop: fix → review → fix → review → until both axes pass
+   └─ Max 5 cycles total (step 12 protection)
+7. ⛔ SELF-CHECK: Was review dispatched AND passed? If NO → back to Step 4.
+8. ⛔ HARD GATE: Both axes must pass. No push without PASS.
    git pull --rebase → commit (ALL_ISSUES) → push
-7. [If COPILOT_ENABLED] gh pr edit --add-reviewer @copilot
-8. Spawn Watch sub-agent → monitor CI + review threads
+9. [If COPILOT_ENABLED] gh pr edit --add-reviewer @copilot
+10. Spawn Watch sub-agent → monitor CI + review threads
    └─ Copilot error does NOT block pipeline; CI status takes priority.
    ┌─ CI fail or new fix comments? → back to step 2
    └─ All clear → report {PERSON}: Ready to merge 🎉
-9. Act on Watch Result:
+11. Act on Watch Result:
    └─ ready_to_merge → merge + close ALL_ISSUES (both AUTO_MERGE=true/false)
    └─ copilot_error → don't block; follow CI status
    └─ ci_failed / needs_fix → back to step 2
@@ -108,7 +114,7 @@ If user says fix main first → exit. If user says continue → proceed.
 **0d. Ask about auto-merge:** Ask {PERSON}:
 > Auto-merge PR when CI passes? (y/N)
 
-Set `AUTO_MERGE=true` if yes, `false` otherwise. Used in Step 9.
+Set `AUTO_MERGE=true` if yes, `false` otherwise. Used in Step 10 (Act on Watch Result).
 
 **0e. Ask max fix sub-agents:** Ask {PERSON}:
 > How many parallel fix sub-agents? (1-4, default 3)
@@ -119,19 +125,20 @@ Set `MAX_FIX_AGENTS` (1-4). Controls problem grouping and parallel agents.
 
 Capture PR_NUMBER from output. All subsequent steps use this PR number.
 
-**0g. Init planning files (optional — skip if planning-with-files not installed):** Run `init-session.sh` from planning-with-files to create a `.planning/` directory with persistent working memory for this fix loop. This helps the Manager and sub-agents survive context resets.
+**0g. Init planning files (optional — skip if planning-with-files not installed):** Creates a `.planning/` directory with persistent working memory for this fix loop. This helps the Manager and sub-agents survive context resets.
 
 ```bash
 cd {REPO_PATH}
-if [ -d "${PLANNING_ROOT}" ]; then
-  bash ${PLANNING_ROOT}/init-session.sh --plan-dir "fix-issue-${ISSUE_NUMBER}"
+PLANNING_ROOT="/Users/tim_openclaw/.openclaw/workspace/skills/planning-with-files/scripts"
+if [ -d "$PLANNING_ROOT" ]; then
+  bash "$PLANNING_ROOT/init-session.sh" --plan-dir "fix-issue-${ISSUE_NUMBER}"
   echo "[planning-with-files] initialized"
 else
   echo "[planning-with-files] not installed — skipping Step 0g"
 fi
 ```
 
-If planning-with-files is installed, after init populate `task_plan.md` with actual phases from the issue analysis:
+After init, populate `task_plan.md` with actual phases from the issue analysis:
 - Phase 1: Read & Analyze (0a-0b already done, mark `complete`)
 - Phase 2-N: One phase per fix group from Step 1 (mark first as `in_progress`)
 - Phase N+1: Review & CI pass
@@ -173,20 +180,42 @@ sessions_spawn({
 - Save each sub-agent's retrospective → ~/.openclaw/workspace/memory/
 - All done → Step 4
 
-### Step 4: Spawn Review Sub-agent
+### Step 4: Spawn Review Sub-agent (Dual-Axis)
+
+Use the **review** skill (`~/.openclaw/workspace/skills/review/SKILL.md`) instead of the old code-review skill. The review runs TWO axes in parallel sub-agents:
+
+**Standards** — does the code follow this repo's documented coding standards?
+**Spec** — does the code faithfully implement the originating issue / PRD?
 
 Template in `references/review-agent-prompt.md`.
 
 ### Step 5: Review Decision — ⛔ HARD GATE (MANDATORY)
 
-**Before any push, a Review sub-agent MUST be dispatched and MUST pass.**
+**Before any push, a Review sub-agent MUST be dispatched and BOTH axes must PASS.**
 
-- **PASS** → Step 6
-- **FAIL** → save feedback to ~/.openclaw/workspace/memory/ → back to Step 2 with feedback enriched
+- **BOTH PASS** → Step 6
+- **FAIL on Standards axis** → save findings to ~/.openclaw/workspace/memory/{YYYY-MM-DD}-{HH-MM}-{ISSUE_NUMBER}-review-round-{N}.md → back to Step 2 with enriched fix instructions. Fix agents MUST address the Standards violations before re-reviewing.
+- **FAIL on Spec axis** → same process. Fix agents adjust implementation to match the spec.
+- **FAIL on both** → prioritize Spec fixes (they affect correctness) over Standards (they affect style).
 
-⛔ No exceptions. No shortcuts. Review must pass before any push.
+⛔ No exceptions. No shortcuts. Both axes must pass before any push.
 
-### Step 6: Rebase + Commit + Push (⛔ GATE: Review must have passed)
+### Step 6: ⛔ SELF-CHECK — Was Review Dispatched and Passed?
+
+**BEFORE any push, you MUST pass this self-check. If you can't, you skipped review and MUST go back.**
+
+```
+SELF-CHECK:
+[ ] Did I spawn a Review sub-agent in this cycle?
+[ ] Did BOTH axes (Standards + Spec) return PASS?
+[ ] Are all review findings recorded in memory/ retro?
+
+If ANY checkbox is NO → ⛔ STOP. Go back to Step 4. Do not push.
+```
+
+Only proceed if ALL checks pass.
+
+### Step 7: Rebase + Commit + Push (⛔ GATE: Self-check passed)
 
 ```bash
 cd {REPO_PATH}
@@ -199,18 +228,18 @@ git push origin {BRANCH_NAME}
 
 Verify with `git diff HEAD --stat` before commit.
 
-### Step 7: Copilot Re-review
+### Step 8: Copilot Re-review
 
 If COPILOT_ENABLED = true:
 ```bash
 gh pr edit {PR_NUMBER} --add-reviewer @copilot
 ```
 
-### Step 8: Watch
+### Step 9: Watch
 
 Template in `references/watch-agent-prompt.md`.
 
-### Step 9: Act on Watch Result
+### Step 10: Act on Watch Result
 
 | Result | Action |
 |--------|--------|
@@ -246,7 +275,7 @@ Template in `references/watch-agent-prompt.md`.
 | `copilot_error` | Copilot review failed (error/rate limit). **Do NOT block pipeline.** CI status takes priority. If CI is passing → treat as `ready_to_merge`. If CI is failing → treat as `ci_failed`. Notify {PERSON} optionally: "Copilot review unavailable on PR #{PR_NUMBER} (rate limit/error). Django CI is still valid."
 | `waiting` | Watch timed out (30 min). Escalate to {PERSON}: "Watch timed out on PR #{PR_NUMBER} after 30 min — please check manually." |
 
-### Step 10: Loop Protection
+### Step 12: Loop Protection
 
 - Max 5 cycles total
 - Same problem unresolved after 3 cycles → escalate to {PERSON}
@@ -262,8 +291,8 @@ Template in `references/watch-agent-prompt.md`.
 | File | Sub-agent | When to Load |
 |------|-----------|-------------|
 | `references/fix-agent-prompt.md` | **Fix Sub-agent** — parallel code repair | Step 2 — spawn one per group (up to {MAX_FIX_AGENTS}) |
-| `references/review-agent-prompt.md` | **Review Sub-agent** — audits all changes | Step 4 — spawned once |
-| `references/watch-agent-prompt.md` | **Watch Sub-agent** — CI + comments monitor | Step 8 — spawned once |
+| `references/review-agent-prompt.md` | **Review Sub-agent** — dual-axis (Standards + Spec) via review skill | Step 4 — spawned once per loop cycle |
+| `references/watch-agent-prompt.md` | **Watch Sub-agent** — CI + comments monitor | Step 9 — spawned once |
 
 ### Manager Reference Guide
 
