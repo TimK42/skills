@@ -63,19 +63,24 @@ You are the commander of this fix loop. Your job:
    └─ Standards: does code follow repo's documented coding standards?
    └─ Spec: does code match what the originating issue asked for?
    └─ Runs full test suite + reviews all changes
-5. Review PASS on BOTH axes? → proceed to step 6
+5. Review PASS on BOTH axes? → proceed to Step 6 (Test Agent)
 6. Review FAIL on EITHER axis? → save feedback → **back to Step 2** with findings
    └─ Loop: fix → review → fix → review → until both axes pass
    └─ Max 5 cycles total (step 12 protection)
-7. ⛔ SELF-CHECK: Was review dispatched AND passed? If NO → back to Step 4.
-8. ⛔ HARD GATE: Both axes must pass. No push without PASS.
+7. 🧪 Spawn Test Sub-agent → writes integration tests covering the diff
+   └─ Reads git diff → analyzes what to test → writes test file(s) → runs them
+   └─ Test agent ONLY writes tests — does NOT modify fix code
+   └─ Test FAIL (code bug discovered) → back to Step 2
+   └─ Test PASS → proceed
+8. ⛔ SELF-CHECK: Was Review dispatched AND passed? Was Test agent dispatched AND passed?
+9. ⛔ HARD GATE: Review + Tests both must pass. No push without PASS.
    git pull --rebase → commit (ALL_ISSUES) → push
-9. [If COPILOT_ENABLED] gh pr edit --add-reviewer @copilot
-10. Spawn Watch sub-agent → monitor CI + review threads
+10. [If COPILOT_ENABLED] gh pr edit --add-reviewer @copilot
+11. Spawn Watch sub-agent → monitor CI + review threads
    └─ Copilot error does NOT block pipeline; CI status takes priority.
    ┌─ CI fail or new fix comments? → back to step 2
    └─ All clear → report {PERSON}: Ready to merge 🎉
-11. Act on Watch Result:
+12. Act on Watch Result:
    └─ ready_to_merge → merge + close ALL_ISSUES (both AUTO_MERGE=true/false)
    └─ copilot_error → don't block; follow CI status
    └─ ci_failed / needs_fix → back to step 2
@@ -114,7 +119,7 @@ If user says fix main first → exit. If user says continue → proceed.
 **0d. Ask about auto-merge:** Ask {PERSON}:
 > Auto-merge PR when CI passes? (y/N)
 
-Set `AUTO_MERGE=true` if yes, `false` otherwise. Used in Step 10 (Act on Watch Result).
+Set `AUTO_MERGE=true` if yes, `false` otherwise. Used in Step 11 (Act on Watch Result).
 
 **0e. Ask max fix sub-agents:** Ask {PERSON}:
 > How many parallel fix sub-agents? (1-4, default 3)
@@ -141,7 +146,7 @@ fi
 After init, populate `task_plan.md` with actual phases from the issue analysis:
 - Phase 1: Read & Analyze (0a-0b already done, mark `complete`)
 - Phase 2-N: One phase per fix group from Step 1 (mark first as `in_progress`)
-- Phase N+1: Review & CI pass
+- Phase N+1: Review, Test, CI pass
 - Phase N+2: Merge & Close
 
 Also populate `findings.md` with the issue analysis results (problem description, files mentioned, severity).
@@ -193,14 +198,27 @@ Template in `references/review-agent-prompt.md`.
 
 **Before any push, a Review sub-agent MUST be dispatched and BOTH axes must PASS.**
 
-- **BOTH PASS** → Step 6
+- **BOTH PASS** → Step 6 (Test Agent)
 - **FAIL on Standards axis** → save findings to ~/.openclaw/workspace/memory/{YYYY-MM-DD}-{HH-MM}-{ISSUE_NUMBER}-review-round-{N}.md → back to Step 2 with enriched fix instructions. Fix agents MUST address the Standards violations before re-reviewing.
 - **FAIL on Spec axis** → same process. Fix agents adjust implementation to match the spec.
 - **FAIL on both** → prioritize Spec fixes (they affect correctness) over Standards (they affect style).
 
-⛔ No exceptions. No shortcuts. Both axes must pass before any push.
+⛔ No exceptions. No shortcuts. Both axes must pass before proceeding to the Test agent.
 
-### Step 6: ⛔ SELF-CHECK — Was Review Dispatched and Passed?
+### Step 6: Spawn Test Sub-agent
+
+Template in `references/test-agent-prompt.md`.
+
+The Test agent writes integration tests covering all code changes in this branch.
+It does NOT modify fix code — changes are already validated by Review.
+
+- **Test PASS** → Step 7 (Self-check)
+- **Test FAIL (code bug)** → back to Step 2. The test discovered a bug that Review missed.
+- **Test FAIL (test bug)** → Test agent self-corrects and re-runs (up to 3 attempts).
+
+Save retrospective to `~/.openclaw/workspace/memory/{YYYY-MM-DD}-{HH-MM}-{ISSUE_NUMBER}-test-round-{ROUND}.md`.
+
+### Step 7: ⛔ SELF-CHECK — Was Review and Test Dispatched and Passed?
 
 **BEFORE any push, you MUST pass this self-check. If you can't, you skipped review and MUST go back.**
 
@@ -208,14 +226,16 @@ Template in `references/review-agent-prompt.md`.
 SELF-CHECK:
 [ ] Did I spawn a Review sub-agent in this cycle?
 [ ] Did BOTH axes (Standards + Spec) return PASS?
-[ ] Are all review findings recorded in memory/ retro?
+[ ] Did I spawn a Test sub-agent in this cycle?
+[ ] Did the Test agent return PASS?
+[ ] Are all review + test findings recorded in memory/ retro?
 
-If ANY checkbox is NO → ⛔ STOP. Go back to Step 4. Do not push.
+If ANY checkbox is NO → ⛔ STOP. Go back to the failed step. Do not push.
 ```
 
 Only proceed if ALL checks pass.
 
-### Step 7: Rebase + Commit + Push (⛔ GATE: Self-check passed)
+### Step 8: Rebase + Commit + Push (⛔ GATE: Self-check passed)
 
 ```bash
 cd {REPO_PATH}
@@ -228,18 +248,18 @@ git push origin {BRANCH_NAME}
 
 Verify with `git diff HEAD --stat` before commit.
 
-### Step 8: Copilot Re-review
+### Step 9: Copilot Re-review
 
 If COPILOT_ENABLED = true:
 ```bash
 gh pr edit {PR_NUMBER} --add-reviewer @copilot
 ```
 
-### Step 9: Watch
+### Step 10: Watch
 
 Template in `references/watch-agent-prompt.md`.
 
-### Step 10: Act on Watch Result
+### Step 11: Act on Watch Result
 
 | Result | Action |
 |--------|--------|
@@ -292,7 +312,8 @@ Template in `references/watch-agent-prompt.md`.
 |------|-----------|-------------|
 | `references/fix-agent-prompt.md` | **Fix Sub-agent** — parallel code repair | Step 2 — spawn one per group (up to {MAX_FIX_AGENTS}) |
 | `references/review-agent-prompt.md` | **Review Sub-agent** — dual-axis (Standards + Spec) via review skill | Step 4 — spawned once per loop cycle |
-| `references/watch-agent-prompt.md` | **Watch Sub-agent** — CI + comments monitor | Step 9 — spawned once |
+| `references/test-agent-prompt.md` | **Test Sub-agent** — integration tests for diff | Step 6 — spawned after Review passes |
+| `references/watch-agent-prompt.md` | **Watch Sub-agent** — CI + comments monitor | Step 10 — spawned once |
 
 ### Manager Reference Guide
 
@@ -315,9 +336,10 @@ Every sub-agent MUST save its retrospective to `~/.openclaw/workspace/memory/` a
 | Fix Group C | `~/.openclaw/workspace/memory/{YYYY-MM-DD}-{HH-MM}-{ISSUE_NUMBER}-fix-group-C.md` | `2026-05-14-22-49-384-fix-group-C.md` |
 | Fix Group D | `~/.openclaw/workspace/memory/{YYYY-MM-DD}-{HH-MM}-{ISSUE_NUMBER}-fix-group-D.md` | `2026-05-14-22-49-384-fix-group-D.md` |
 | Review | `~/.openclaw/workspace/memory/{YYYY-MM-DD}-{HH-MM}-{ISSUE_NUMBER}-review-round-{N}.md` | `2026-05-14-22-49-384-review-round-1.md` |
+| Test | `~/.openclaw/workspace/memory/{YYYY-MM-DD}-{HH-MM}-{ISSUE_NUMBER}-test-round-{ROUND}.md` | `2026-05-14-22-49-384-test-round-1.md` |
 | Watch | `~/.openclaw/workspace/memory/{YYYY-MM-DD}-{HH-MM}-{ISSUE_NUMBER}-watch-round-{N}.md` | `2026-05-14-22-49-384-watch-round-1.md` |
 
-The Manager tracks round numbers for Review and Watch (increment each loop cycle).
+The Manager tracks round numbers for Review, Test, and Watch (increment each loop cycle).
 
 ## Communication Rules
 
