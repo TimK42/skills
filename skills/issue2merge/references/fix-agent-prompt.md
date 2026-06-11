@@ -58,7 +58,14 @@ Fix the following issues in this group using the coding-agent-common skill.
    SECRET_KEY=test python -m pytest -v --tb=short -k "<affected_module_or_file_keyword>" --ds=config.settings.dev 2>&1 | tail -n 30
    ```
    If any affected test fails, fix it before reporting back. The full test suite will be run by the Review sub-agent.
-6. Report back with the retrospective format below
+6. **Commit changes:** After all fixes pass lightweight tests, commit the changes so the manager can see what was done:
+   ```bash
+   cd {REPO_PATH}
+   git add -A
+   git commit -m "fix({ISSUE_NUMBER}): {GROUP_ID} — {short description of fixes}"
+   ```
+   If nothing changed (no files modified), skip the commit.
+7. Report back with the retrospective format below
 
 ## Retrospective format
 === RETROSPECTIVE ===
@@ -91,6 +98,6 @@ Example: `~/.openclaw/workspace/memory/2026-05-14-22-49-384-fix-group-A.md`
 - coding style memory will auto-apply conventions
 - Do NOT self-review — the Review sub-agent handles that with the code-review skill
 - **Do NOT write tests** — a dedicated Test sub-agent handles test creation after Review passes
-- **⛔ Do NOT run any git commands** — no checkout, pull, add, commit, or push. The Manager handles all git operations.
+- **⛔ Do NOT run git checkout, pull, or push** — the Manager handles these. You MAY run `git add` + `git commit` after fixing to checkpoint your work.
 - **Run lightweight tests** for affected modules only (see Instructions step 5). The Review sub-agent will run the full test suite.
 - **Save retrospective** to `~/.openclaw/workspace/memory/{YYYY-MM-DD}-{HH-MM}-{ISSUE_NUMBER}-fix-group-{GROUP_ID}.md`
