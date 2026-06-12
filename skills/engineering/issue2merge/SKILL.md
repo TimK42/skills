@@ -37,8 +37,8 @@ You are the commander of this fix loop. Your job:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `PERSON` | Who to report to | Tim |
-| `REPO_PATH` | Local project path | `Git-Repository/161-happy-land` |
-| `REPO_FULL` | GitHub `owner/repo` | TimK42/161-happy-land |
+| `REPO_PATH` | Local project path | *(required)* |
+| `REPO_FULL` | GitHub `owner/repo` | *(required)* |
 | `ISSUE_NUMBER` | Source issue # | *(required)* |
 | `ALL_ISSUES` | Comma-separated list of all issues in this PR | `{ISSUE_NUMBER}` |
 | `COPILOT_ENABLED` | Enable Copilot review kickoff? | true |
